@@ -1,3 +1,77 @@
+# Week 3
+
+UC Hook code - Unicorn
+
+mu.mem_write(r1, my_msg)
+mu.reg_write(PC, LR) - line 21 code
+r1 = mu.reg_read(r1)
+
+NOP - als ik geen instructie wil uitvoeren
+
+shellstorm online assembler
+
+mu.mem_write(address, NOP)
+hook block for debug printing
+
+implement heap memory
+
+# week 2 stuff
+
+### functions extra notes
+- FUN_000db560: nested function of FUN_000db380 that probably parses the AT command.
+its return codes are:
+* 0 = success
+* 1 = bad/empty command (inferred from line 23)
+* 2 = bad command prefix (infered from line 27)
+* 7 = reject immediately and skip over validation, then scan the string for control characters.
+* 8 = command ready and check for control characters at the end?
+* 9 = ctrl+Z
+* 10 = escape
+* 11 (0xb) = newline
+
+nested function: FUN_000d8866
+since its unsigned int, if ascii character is smaller than 'a' then it wraps to high integer, which is not smaller than 26 so it fails, if the character is bigger than 'z' e.g. '{' then subtracting 0x61 from it will result in something that is not < 26.
+
+# Vulnerabilities found
+
+## no malloc vulnerabilities
+nothing interesting found in these functions since malloc is not user-controlled input.
+- 0x000da892
+- 0x000dab06
+- 0x000daed6
+- 0x000dacc2
+- 0x000dace4
+- 0x000dace4
+
+## malloc vulnerability
+
+### 0x000da8a4
+user controlled malloc size, namely message_data + 6. Right after next line, it copies message data into msg_data_buffer (pvVar7). However, if message_data+6 points to 0xFFFFFFFF, then the +1 will cause an integer overflow since its casted to a 32-bit integer, causing a malloc with size 0, then memcpy() will copy 4gb into a malloc of 0, which would overflow the buffer. In order to reach this case you need message_data[0] = 0x0001 to get past command ID = 1, message_data[1] = 0xFFFF (-1 since its signed int) for the outer if statement. and message_data[6] = 0xFFFFFFFF. (each index is 2 bytes since ushort is 2 bytes for an item)
+
+## deeper targets
+
+### FUN_00141afc (handles unrecognized commands):
+nothing interesting found yet.
+
+### FUN_000db380
+I found this function which concatenates strings, line 54 the function goes over the entire string until it reaches "\0" and increments, which is likely strlen() function. line 56 uses string lenght concatenation for malloc() where it concatenates ivar3 + ivar4 + 1. if ivar3 and ivar4 can be 0x7FFFFFFF, then 0x7FFFFFFF + 0x7FFFFFFF + 1 = 0xFFFFFFFF + 1 = 0. Then right after, sprintf stores a string in the malloced variable which will overflow. It can be triggered by first triggering the LAB_000daac8 case, then sending a message 0x7FFFFFFF. Then repeat the same steps for the next message. The old message is stored in ivar3 and when the second message arrives, it mallocs ivar3 + ivar4 then the +1 at the end will cause an integer overflow and the sprintf will overflow the buffer of 0.
+
+Second vulnerability I found
+
+- FUN_000db560: nested function of FUN_000db380 that probably parses the AT command.
+- FUN_000dca68
+- FUN_000dcadc
+- FUN_000dc2a0
+- FUN_000dc50e
+- FUN_000dc570
+- FUN_000dbec4
+- FUN_000dbe00
+- FUN_000dc834
+- FUN_000dc95c
+- FUN_000dc8f4
+
+
+# week 1 stuff
 # AT Task Entry function
 
 Date: 01-04-2026/04-04-2026

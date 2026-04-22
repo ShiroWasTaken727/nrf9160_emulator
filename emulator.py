@@ -9,11 +9,21 @@ def align_size(bytes_size, four_kb=4096):
     return math.ceil(bytes_size / four_kb) * four_kb
 
 
+# hooks for tracing basic blocks and instructions (debugging)
+def hook_block(uc, address, size, user_data):
+    print(">>> Basic block at 0x%x, size = 0x%x" % (address, size))
+
+
+# hooking code for svc instructions to handle system calls
+def hook_code(uc, address, size, user_data):
+    print(">>> Instruction at 0x%x, size = 0x%x" % (address, size))
+
+
 # load the firmware into memory
 FIRMWARE = open("modem_firmware.bin", "rb").read()
 BASE_ADDRESS = 0x50000
 
-# start at modem_system_ram end - 4 bytes at the very top to be safe
+# start at modem_system_ram end
 STACK_ADDRESS = 0x20000000 + 0x8000 - 4
 
 process_message = 0x000DA7E0
@@ -40,10 +50,12 @@ try:
     mu.mem_map(0x800000, 0x40000)  # modem_m4_data_tcm
     mu.mem_map(0x20000000, 0x8000)  # modem_system_ram
     mu.mem_map(0x22000000, 0x20000)  # modem_DSP_ram
-    mu.mem_map(0x40000000, 0x20000000)  # peripheral
-    mu.mem_map(0xE0000000, 0x20000000)  # system_SYS
+    # mu.mem_map(0x40000000, 0x20000000)  # peripheral
+    # mu.mem_map(0xE0000000, 0x20000000)  # system_SYS
+    mu.mem_map(0x40000000, 0x1000)  # peripheral
+    mu.mem_map(0xE0000000, 0x1000)  # system_SYS
 
-    # initialize to 0 for now, but this should be the message pointer
+    # initialize to 0 for now, but this should be the message_data pointer
     mu.reg_write(UC_ARM_REG_R0, 0x0)
     mu.reg_write(UC_ARM_REG_SP, STACK_ADDRESS)
 
