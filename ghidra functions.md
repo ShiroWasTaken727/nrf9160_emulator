@@ -46,7 +46,12 @@ nothing interesting found in these functions since malloc is not user-controlled
 ## malloc vulnerability
 
 ### 0x000da8a4
-user controlled malloc size, namely message_data + 6. Right after next line, it copies message data into msg_data_buffer (pvVar7). However, if message_data+6 points to 0xFFFFFFFF, then the +1 will cause an integer overflow since its casted to a 32-bit integer, causing a malloc with size 0, then memcpy() will copy 4gb into a malloc of 0, which would overflow the buffer. In order to reach this case you need message_data[0] = 0x0001 to get past command ID = 1, message_data[1] = 0xFFFF (-1 since its signed int) for the outer if statement. and message_data[6] = 0xFFFFFFFF. (each index is 2 bytes since ushort is 2 bytes for an item)
+
+User-controlled malloc size at this instruction. The line is message_malloc(*(int *)(message_data + 6) + 1) followed by a memcpy using the same value as length. The length is a uint32 at byte offset 12 of the message struct. Ghidra shows it as *(int *)(message_data + 6) because message_data is typed as ushort *, so +6 advances 12 bytes. The data pointer used by the memcpy is at byte offset 8, shown in Ghidra as *(void **)(message_data + 4). Setting the length field to 0xFFFFFFFF causes the + 1 in message_malloc(... + 1) to wrap to 0 (32-bit unsigned overflow). malloc(0) returns a 0 buffer, then memcpy copies 0xFFFFFFFF bytes into it which will cause a  heap overflow. To reach this case the message struct must be:
+- byte offset 0 (command_id, uint16) = 0x0001, which will pass the *message_data == 1 case
+- byte offset 2 (flags, uint16) = 0xFF which will pass the (char)message_data[1] == -1 outer if-statement
+- byte offset 8 (message data pointer, uint32) = pointer to attacker-controlled buffer
+- byte offset 12 (message data length, uint32) = 0xFFFFFFFF
 
 ## deeper targets
 
