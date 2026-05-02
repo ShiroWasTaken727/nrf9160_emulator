@@ -1,6 +1,7 @@
+import sys
 import math
 import struct
-import sys
+import unicornafl
 
 from unicorn import *
 from unicorn.arm_const import *
@@ -16,8 +17,8 @@ def align_4_bytes(requested_size):
 
 
 # hooks for tracing basic blocks and instructions (debugging)
-def hook_block(uc, address, size, user_data):
-    print(">>> Basic block at 0x%x, size = 0x%x" % (address, size))
+# def hook_block(uc, address, size, user_data):
+#     print(">>> Basic block at 0x%x, size = 0x%x" % (address, size))
 
 
 # hooking code for svc instructions to handle system calls
@@ -33,49 +34,49 @@ def hook_code(uc, address, size, user_data):
     if address == 0xDA7E0:
 
         lr = uc.reg_read(UC_ARM_REG_LR)
-        print(f">>> At function entry, LR={hex(lr)}")
+        # print(f">>> At function entry, LR={hex(lr)}")
 
     if address == free:
         lr = uc.reg_read(UC_ARM_REG_LR)
-        print(f">>> Skipping free()")
+        # print(f">>> Skipping free()")
         uc.reg_write(UC_ARM_REG_PC, lr)
         return
 
     if address == FUN_000dd190:
         lr = uc.reg_read(UC_ARM_REG_LR)
-        print(f">>> Skipping FUN_000dd190")
+        # print(f">>> Skipping FUN_000dd190")
         uc.reg_write(UC_ARM_REG_PC, lr)
         return
     if address == FUN_000d84bc:
         lr = uc.reg_read(UC_ARM_REG_LR)
-        print(f">>> Found FUN_000d84bc. Skipping and returning to LR: {hex(lr)}")
+        # print(f">>> Found FUN_000d84bc. Skipping and returning to LR: {hex(lr)}")
         uc.reg_write(UC_ARM_REG_PC, lr)
         return
     if address == FUN_000db380:
-        print(">>> Entered the parser function (FUN_000db380)")
+        # print(">>> Entered the parser function (FUN_000db380)")
         r0 = uc.reg_read(UC_ARM_REG_R0)
-        print(f">>> Parser function argument R0: {hex(r0)}")
+        # print(f">>> Parser function argument R0: {hex(r0)}")
 
     if address == message_malloc:
         requested_size = uc.reg_read(UC_ARM_REG_R0)
-        print(
-            f">>> Found message_malloc. Allocating {requested_size} bytes at {hex(HEAP_PTR)}"
-        )
+        # print(
+        #     f">>> Found message_malloc. Allocating {requested_size} bytes at {hex(HEAP_PTR)}"
+        # )
         if HEAP_PTR + requested_size > HEAP_MAX:
-            print(">>> Heap overflow detected. Cannot allocate more memory.")
+            # print(">>> Heap overflow detected. Cannot allocate more memory.")
             uc.reg_write(UC_ARM_REG_R0, 0)  # return null pointer
         else:
             uc.reg_write(UC_ARM_REG_R0, HEAP_PTR)  # return heap pointer
             HEAP_PTR += align_4_bytes(requested_size)
 
         lr = uc.reg_read(UC_ARM_REG_LR)
-        print(f">>> Returning to LR: {hex(lr)}")
+        # print(f">>> Returning to LR: {hex(lr)}")
         uc.reg_write(UC_ARM_REG_PC, lr)
         return
 
     if address == 0x0:
         lr = uc.reg_read(UC_ARM_REG_LR)
-        print(f">>> ERROR: CPU jumped to 0x0. LR: {hex(lr)}")
+        # print(f">>> ERROR: CPU jumped to 0x0. LR: {hex(lr)}")
 
         # force the emulator to stop instantly for a clean terminal output
         uc.emu_stop()
@@ -108,10 +109,11 @@ HEAP_PTR = HEAP_ADDRESS
 
 # write AT string outside of heap to avoid overwriting in case of malloc
 AT_STRING_ADDRESS = 0x20004000
-MESSAGE_DATA_ADDR = 0x0  # we will write the message structure here later
+MESSAGE_DATA_ADDR = 0x20003000
 
 # emulation starting point: start of the process_message function in the firmware
 process_message = 0x000DA7E0
+EXIT_ADDRESS = 0xC0FFEE
 
 print("Emulating modem firmware...")
 print(f"Emulating: process_message - 0x{process_message:x}")
@@ -120,9 +122,6 @@ print(f"Emulating: process_message - 0x{process_message:x}")
 try:
     # initialize emulator in ARM mode and thumb mode for Cortex-M ISA
     mu = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
-
-    print(f"Firmware size: {hex(len(FIRMWARE))}")
-    print(f"Aligned size: {hex(align_size(len(FIRMWARE)))}")
 
     # map memory for the firmware needs to be aligned 4KB
     mu.mem_map(0x50000, align_size(len(FIRMWARE)))  # firmware ram
@@ -139,69 +138,65 @@ try:
     mu.mem_map(0x40000000, 0x20000000)  # peripheral
     mu.mem_map(0xE0000000, 0x20000000)  # system_SYS
 
-    # detect replay crash input from CLI argument or prepare a default payload for testing
-    if len(sys.argv) > 1:
-        print("Replaying crash from file:", sys.argv[1])
-        file_path = sys.argv[1]
-        crash_input = open(file_path, "rb").read()
-        command_id = 1
-        flags = 0x00FF
-        unknown_bytes = int.from_bytes(
-            crash_input[4:8], "little"
-        )  # provded by AFL input
-        data_ptr = AT_STRING_ADDRESS
-        data_len = int.from_bytes(
-            crash_input[12:16], "little"
-        )  # size from the crash input
-        print(f"Data_len = 0x{data_len:x} ({data_len})")
-
-        message_data = struct.pack(
-            "<HHIII", command_id, flags, unknown_bytes, data_ptr, data_len
-        )
-        at_string = crash_input[14 : 14 + min(data_len, 256)] + b"\x00"
-        mu.mem_write(AT_STRING_ADDRESS, at_string)
-    else:
-        # prepare AT command payload for testing
-        payload = b"AT+CFUN?\x00"  # simple payload for testing read
-        # payload = b"AT+CFUN=0\x00"  # dummy payload for testing set
-        # payload = b'AT+CGAUTH=1,1,"' + (b'"' * 255) + b';+CFUN=0;","password"\x00' # payload for testing quote vulnerability (no vulnerability yet)
-
-        # write the payload to memory at AT_STRING_ADDRESS
-        mu.mem_write(AT_STRING_ADDRESS, payload)
-
-        # source: https://docs.python.org/3/library/struct.html
-        # construct the message structure for process_message
-        # format: command_id (2 bytes) [0], flags (2 bytes) [1], padding (4 bytes) [2],
-        # payload pointer (4 bytes) [3], payload length (4 bytes) [4]
-        message_data = struct.pack(
-            "<HHIII", 1, 0xFFFF, 0, AT_STRING_ADDRESS, len(payload)
-        )
-
-    # define outside of heap to avoid overwriting in case of malloc again
-    MESSAGE_DATA_ADDR = 0x20003000
-
-    # load the message structure into MESSAGE_DATA_ADDR
-    mu.mem_write(MESSAGE_DATA_ADDR, message_data)
-
-    # load message pointer into r0 and payload length into r1 (first arg for process_message)
-    mu.reg_write(UC_ARM_REG_R0, MESSAGE_DATA_ADDR)
-
-    # set the stack pointer to the address
-    mu.reg_write(UC_ARM_REG_SP, STACK_ADDRESS)
-
-    # use magic number 0xC0FFEE as the exit address for the end of the emulation (arbitrarily defined)
-    EXIT_ADDRESS = 0xC0FFEE
-    mu.reg_write(UC_ARM_REG_LR, EXIT_ADDRESS)
-
-    # add hooks for memory errors, basic blocks (debugging) and for svc instructions
+    # add hooks for memory errors and for svc instructions
     mu.hook_add(UC_HOOK_MEM_INVALID, hook_memory_invalid)
-    mu.hook_add(UC_HOOK_BLOCK, hook_block)
     mu.hook_add(UC_HOOK_CODE, hook_code)
-
-    # start emulation at the process_message function and end at the exit address we set in LR
-    # | 1 to set thumb mode bit in the address
-    mu.emu_start(process_message | 1, EXIT_ADDRESS)
 
 except UcError as e:
     print(f"Failed: {e}")
     exit(1)
+
+
+# per-round fuzzing function that will be called by UnicornAFL
+def place_afl_bytes(uc, input_bytes, persistent_round, data):
+    global HEAP_PTR
+
+    # reject 14 byte inputs since message struct needs to be at least 14 bytes
+    if len(input_bytes) < 14:
+        return False
+
+    HEAP_PTR = HEAP_ADDRESS
+
+    # construct message struct
+    command_id = 1
+    flags = 0x00FF  # convert bytes to int for flags
+    unknown_bytes = int.from_bytes(input_bytes[4:8], "little")
+    data_ptr = AT_STRING_ADDRESS  # point to the AT string in memory
+    data_len = int.from_bytes(input_bytes[12:16], "little")
+
+    msg = struct.pack("<HHIII", command_id, flags, unknown_bytes, data_ptr, data_len)
+    uc.mem_write(MESSAGE_DATA_ADDR, msg)
+
+    # clear old data first
+    uc.mem_write(AT_STRING_ADDRESS, b"\x00" * 256)
+
+    # take remaining bytes as AT command string and add null terminator
+    at_string = input_bytes[14 : 14 + data_len] + b"\x00"
+    uc.mem_write(AT_STRING_ADDRESS, at_string)
+
+    # Reset CPU state for this round
+    uc.reg_write(UC_ARM_REG_R0, MESSAGE_DATA_ADDR)
+    uc.reg_write(UC_ARM_REG_SP, STACK_ADDRESS)
+    uc.reg_write(UC_ARM_REG_LR, EXIT_ADDRESS)
+    uc.reg_write(UC_ARM_REG_PC, process_message | 1)  # set thumb bit
+
+    return True
+
+
+# start fuzzing with UnicornAFL
+input_file = None
+
+if len(sys.argv) > 1:
+    input_file = sys.argv[1]
+    print(f"Using input file: {input_file}")
+else:
+    print("No input file provided. Starting with empty input.")
+
+result = unicornafl.uc_afl_fuzz(
+    uc=mu,
+    input_file=None,
+    place_input_callback=place_afl_bytes,
+    exits=[EXIT_ADDRESS],
+)
+
+print(f"Fuzzing result: {result}")

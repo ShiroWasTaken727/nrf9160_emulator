@@ -1,3 +1,12 @@
+# Week 4
+
+# malloc integer overflow bug
+
+fuzzed vulnerability target found and confirmed by replaying the exact crash in emulator.py.
+AFL produced a crashing input with a data length of roughly 1MB. crashed at: ```>>> Found message_malloc. Allocating 1048586 bytes at 0x2000501c```
+which is ```msg_data_buffer = (void *)message_malloc(*(int *)(message_data + 6) + 1);``` in ghidra. After malloc fails because of potential heap overflow, memcpy tries to store 1mb data in malloc of size NULL
+resulting in the crash (dereferencing a null pointer).
+
 # Week 3
 
 UC Hook code - Unicorn
