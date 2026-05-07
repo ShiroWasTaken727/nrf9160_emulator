@@ -25,16 +25,49 @@ def hook_code(uc, address, size, user_data):
     # print(">>> Instruction at 0x%x, size = 0x%x" % (address, size))
     global HEAP_PTR
 
+    sleep = 0x000D7EE6
     free = 0x000D770E
+
     message_malloc = 0x000D7C16
+    alloc_000d753e = 0x000D753E
+    alloc_0005c0f4 = 0x0005C0F4
+
+    send_AT_response = 0x000DCF5C
+
     FUN_000dd190 = 0x000DD190
     FUN_000d84bc = 0x000D84BC
     FUN_000db380 = 0x000DB380
-    if address == 0xDA7E0:
+    FUN_000d7ebc = 0x000D7EBC
+    FUN_000da004 = 0x000DA004
+    FUN_000131ce8 = 0x00131CE8  # pal_msg_send_to
+    FUN_000d8562 = 0x000D8562
+    FUN_000d84c4 = 0x000D84C4
+    FUN_000d84ac = 0x000D84AC
 
+    diag_tracing_functions = [
+        0x0012D534,
+        0x0012D55E,
+        0x00066998,
+        0x0012D348,
+        0x0012CF40,
+        0x00066A24,
+    ]
+
+    if address == FUN_000da004:
+        lr = uc.reg_read(UC_ARM_REG_LR)
+        uc.reg_write(UC_ARM_REG_R0, 0)  # return 0 = modem not busy
+        uc.reg_write(UC_ARM_REG_PC, lr)
+        return
+
+    if address == 0xDA7E0:
         lr = uc.reg_read(UC_ARM_REG_LR)
         # print(f">>> At function entry, LR={hex(lr)}")
 
+    if address == sleep:
+        lr = uc.reg_read(UC_ARM_REG_LR)
+        # print(f">>> Skipping sleep()")
+        uc.reg_write(UC_ARM_REG_PC, lr)
+        return
     if address == free:
         lr = uc.reg_read(UC_ARM_REG_LR)
         # print(f">>> Skipping free()")
@@ -43,7 +76,7 @@ def hook_code(uc, address, size, user_data):
 
     if address == FUN_000dd190:
         lr = uc.reg_read(UC_ARM_REG_LR)
-        # print(f">>> Skipping FUN_000dd190")
+        # print(f">>> Found FUN_000dd190. Skipping and returning to LR: {hex(lr)}")
         uc.reg_write(UC_ARM_REG_PC, lr)
         return
     if address == FUN_000d84bc:
@@ -55,8 +88,41 @@ def hook_code(uc, address, size, user_data):
         # print(">>> Entered the parser function (FUN_000db380)")
         r0 = uc.reg_read(UC_ARM_REG_R0)
         # print(f">>> Parser function argument R0: {hex(r0)}")
+    if address == FUN_000d7ebc:
+        lr = uc.reg_read(UC_ARM_REG_LR)
+        # print(f">>> Found FUN_000d7ebc. Skipping and returning to LR: {hex(lr)}")
+        uc.reg_write(UC_ARM_REG_PC, lr)
+        return
+    if address == FUN_000131ce8:
+        lr = uc.reg_read(UC_ARM_REG_LR)
+        # print(f">>> Found pal_msg_send_to. Skipping and returning to LR: {hex(lr)}")
+        uc.reg_write(UC_ARM_REG_PC, lr)
+        return
+    if address == FUN_000d8562:
+        lr = uc.reg_read(UC_ARM_REG_LR)
+        # print(f">>> Found FUN_000d8562. Skipping and returning to LR: {hex(lr)}")
+        uc.reg_write(UC_ARM_REG_PC, lr)
+        return
+    if address == FUN_000d84c4:
+        lr = uc.reg_read(UC_ARM_REG_LR)
+        # print(f">>> Found FUN_000d84c4. Skipping and returning to LR: {hex(lr)}")
+        uc.reg_write(UC_ARM_REG_PC, lr)
+        return
+    if address == FUN_000d84ac:
+        lr = uc.reg_read(UC_ARM_REG_LR)
+        # print(f">>> Found FUN_000d84ac. Skipping and returning to LR: {hex(lr)}")
+        uc.reg_write(UC_ARM_REG_PC, lr)
+        return
 
-    if address == message_malloc:
+    if address in diag_tracing_functions:
+        lr = uc.reg_read(UC_ARM_REG_LR)
+        # print(
+        #     f">>> Found diag tracing function at {hex(address)}. Skipping and returning to LR: {hex(lr)}"
+        # )
+        uc.reg_write(UC_ARM_REG_PC, lr)
+        return
+
+    if address == message_malloc or address == alloc_0005c0f4:
         requested_size = uc.reg_read(UC_ARM_REG_R0)
         # print(
         #     f">>> Found message_malloc. Allocating {requested_size} bytes at {hex(HEAP_PTR)}"
@@ -72,6 +138,31 @@ def hook_code(uc, address, size, user_data):
         # print(f">>> Returning to LR: {hex(lr)}")
         uc.reg_write(UC_ARM_REG_PC, lr)
         return
+    if address == alloc_000d753e:
+        num = uc.reg_read(UC_ARM_REG_R0)
+        type_size = uc.reg_read(UC_ARM_REG_R1)
+        requested_size = num * type_size
+
+        if requested_size == 0:
+            # print(
+            #     f">>> Warning: alloc_000d753e called with num={num}, type={type_size}. Returning null pointer."
+            # )
+            uc.reg_write(UC_ARM_REG_R0, 0)  # return null pointer
+        elif HEAP_PTR + requested_size > HEAP_MAX:
+            # print(f">>> alloc_000d753e: Heap overflow. Returning null pointer.")
+            uc.reg_write(UC_ARM_REG_R0, 0)
+        else:
+            uc.reg_write(UC_ARM_REG_R0, HEAP_PTR)  # return heap pointer
+            HEAP_PTR += align_4_bytes(requested_size)
+        lr = uc.reg_read(UC_ARM_REG_LR)
+        uc.reg_write(UC_ARM_REG_PC, lr)
+        return
+
+    if address == send_AT_response:
+        r0 = uc.reg_read(UC_ARM_REG_R0)
+        response_bytes = bytes(uc.mem_read(r0, 32))
+        response_text = response_bytes.split(b"\x00")[0]
+        # print(f">>> send_AT_response: {response_text}")
 
     if address == 0x0:
         lr = uc.reg_read(UC_ARM_REG_LR)
@@ -131,11 +222,15 @@ try:
     # map memory regions
     mu.mem_map(0x0, 0x1000)  # modem_reg_dump
     mu.mem_map(0x240000, 0x40000)  # modem_fota_area
-    mu.mem_map(0x800000, 0x40000)  # modem_m4_data_tcm
+    mu.mem_map(0x800000, 0x8000)  # covers tcm_copy + tcm1
+    mu.mem_map(0x80A000, 0x26000)  # covers tcm_copy2 + tcm2
     mu.mem_map(0x20000000, 0x8000)  # modem_system_ram
     mu.mem_map(0x22000000, 0x20000)  # modem_DSP_ram
     mu.mem_map(0x40000000, 0x20000000)  # peripheral
     mu.mem_map(0xE0000000, 0x20000000)  # system_SYS
+
+    mu.mem_write(0x800000, FIRMWARE[0x19658 : 0x19658 + 0x7C8])
+    mu.mem_write(0x80A000, FIRMWARE[0x16F238 : 0x16F238 + 0x1E88])
 
     # add hooks for memory errors and for svc instructions
     mu.hook_add(UC_HOOK_MEM_INVALID, hook_memory_invalid)
@@ -156,9 +251,12 @@ def place_afl_bytes(uc, input_bytes, persistent_round, data):
 
     HEAP_PTR = HEAP_ADDRESS
 
+    # we need to set modem to 1 or else it returns 7 in AT_validate_dispatch meaning that the modem is not ready
+    mu.mem_write(0x0080BE07, b"\x01")
+
     # construct message struct
     command_id = 1
-    flags = 0x00FF
+    flags = 0xFFFF
     unknown_bytes = int.from_bytes(input_bytes[4:8], "little")
     data_ptr = AT_STRING_ADDRESS  # point to the AT string in memory
     data_len = int.from_bytes(input_bytes[12:16], "little")

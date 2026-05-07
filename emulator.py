@@ -291,6 +291,7 @@ try:
     mu.hook_add(UC_HOOK_BLOCK, hook_block)
     mu.hook_add(UC_HOOK_CODE, hook_code)
 
+    # we need to set modem to 1 or else it returns 7 in AT_validate_dispatch meaning that the modem is not ready
     mu.mem_write(0x0080BE07, b"\x01")
     # start emulation at the process_message function and end at the exit address we set in LR
     # | 1 to set thumb mode bit in the address
@@ -311,16 +312,6 @@ try:
         # read the actual response string
         response_str = mu.mem_read(data_ptr, data_len)
         print(f">>> AT response string: {bytes(response_str)}")
-
-    heap_contents = mu.mem_read(HEAP_ADDRESS, HEAP_PTR - HEAP_ADDRESS)
-
-    # search for username and password in heap
-    if b"username" in heap_contents:
-        username_offset = heap_contents.index(b"username")
-        print(f">>> Found 'username' in heap")
-    if b"password" in heap_contents:
-        password_offset = heap_contents.index(b"password")
-        print(f">>> Found 'password' in heap")
 
 except UcError as e:
     print(f"Failed: {e}")
