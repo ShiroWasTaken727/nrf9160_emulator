@@ -1,4 +1,3 @@
-import sys
 import math
 import struct
 import unicornafl
@@ -83,7 +82,7 @@ def hook_code(uc, address, size, user_data):
         return
 
     if address == 0xC0FFEE:
-        print(">>> Reached exit address ☕. Stopping emulation.")
+        # print(">>> Reached exit address ☕. Stopping emulation.")
         uc.emu_stop()
         return
 
@@ -91,7 +90,7 @@ def hook_code(uc, address, size, user_data):
 def hook_memory_invalid(uc, memory_type, address, size, value, user_data):
     pc = uc.reg_read(UC_ARM_REG_PC)
     lr = uc.reg_read(UC_ARM_REG_LR)
-    print(f">>> Memory error at {hex(address)}, PC={hex(pc)}, LR={hex(lr)}")
+    # print(f">>> Memory error at {hex(address)}, PC={hex(pc)}, LR={hex(lr)}")
     return False
 
 
@@ -115,8 +114,8 @@ MESSAGE_DATA_ADDR = 0x20003000
 process_message = 0x000DA7E0
 EXIT_ADDRESS = 0xC0FFEE
 
-print("Emulating modem firmware...")
-print(f"Emulating: process_message - 0x{process_message:x}")
+# print("Emulating modem firmware...")
+# print(f"Emulating: process_message - 0x{process_message:x}")
 
 # set up Unicorn emulator
 try:
@@ -143,7 +142,7 @@ try:
     mu.hook_add(UC_HOOK_CODE, hook_code)
 
 except UcError as e:
-    print(f"Failed: {e}")
+    # print(f"Failed: {e}")
     exit(1)
 
 
@@ -159,7 +158,7 @@ def place_afl_bytes(uc, input_bytes, persistent_round, data):
 
     # construct message struct
     command_id = 1
-    flags = 0x00FF  # convert bytes to int for flags
+    flags = 0x00FF
     unknown_bytes = int.from_bytes(input_bytes[4:8], "little")
     data_ptr = AT_STRING_ADDRESS  # point to the AT string in memory
     data_len = int.from_bytes(input_bytes[12:16], "little")
@@ -178,7 +177,7 @@ def place_afl_bytes(uc, input_bytes, persistent_round, data):
     uc.reg_write(UC_ARM_REG_R0, MESSAGE_DATA_ADDR)
     uc.reg_write(UC_ARM_REG_SP, STACK_ADDRESS)
     uc.reg_write(UC_ARM_REG_LR, EXIT_ADDRESS)
-    uc.reg_write(UC_ARM_REG_PC, process_message | 1)  # set thumb bit
+    uc.reg_write(UC_ARM_REG_PC, process_message | 1)  # set LSB for thumb mode
 
     return True
 
@@ -186,17 +185,11 @@ def place_afl_bytes(uc, input_bytes, persistent_round, data):
 # start fuzzing with UnicornAFL
 input_file = None
 
-if len(sys.argv) > 1:
-    input_file = sys.argv[1]
-    print(f"Using input file: {input_file}")
-else:
-    print("No input file provided. Starting with empty input.")
-
 result = unicornafl.uc_afl_fuzz(
     uc=mu,
-    input_file=None,
+    input_file=input_file,  # set to none to let AFL generate its own inputs
     place_input_callback=place_afl_bytes,
     exits=[EXIT_ADDRESS],
 )
 
-print(f"Fuzzing result: {result}")
+# print(f"Fuzzing result: {result}")
