@@ -1,4 +1,64 @@
+# week 5
+
+Fuzzed for 6 hours exactly. Found 4 potential crashes where the first crash is related to my heap being only 8kb and the fuzzer wrote a string larger than 8kb. The other 3 crashes turned out to be misisng svc calls. After adding the svc calls, everything ran without any crashes, suggesting that so far the firmware has been pretty robust against the fuzzer.
+
 # Week 4
+
+FUN_000dc7a4 - interesting target
+
+[HEADER]
+message_data[0] 2 bytes, starting offset: 0 = command_id (command type) based on content of the if else statements in process_message.
+message_Data[1] 2 bytes, starting offset: 2 = flags has to be some specific values to enter specific branches, e.g. `if ((char)message_data[1] == -1) {`.
+message_data[2-3] 2*2 bytes, starting offset: 4-6 = unknown numerous use cases, not sure what it does.
+
+[BODY]
+message_data[4] 4 bytes, starting offset: 8 = pointer to the AT string based on FUN_000db380, which calls AT_validate_dispatch (FUN_000db560) where the same pointer is stripped from whitespaces and checks for "AT" in the string.
+message_data[5] 4 bytes, starting offset: 12 = length based on third parameter of memcpy() in process_message().
+
+checks for making message work: in AT_validate_dispatch it checks:
+`if (DAT_0080be07 == '\0') { result = 7;`.
+If it enters that loop, it exits the function with returning 7, so ivar2 = 7 will reach:
+```
+if (iVar2 == 7) {
+    DAT_0080be0f = cVar1;
+    FUN_000d9ea0(__ptr);
+    __ptr = NULL;
+    goto LAB_000db490;
+  }
+```
+where it will just be freed and return from function:
+```
+LAB_000db490:
+  free(__ptr);
+  return iVar2;
+```
+
+so then in process_message():
+` iVar11 = FUN_000db380(message_data,local_40);`
+the value will be 7 as well, so it goes to the code below:
+```
+switchD_000da954_caseD_1802:
+    goto LAB_000db174;
+  }
+```
+where it will just free and return from process_message:
+```LAB_000db174:
+  if (local_40[0] != '\0') {
+    if (iVar11 == 0) {
+LAB_000db1a6:
+      send_AT_response(&"OK",0);
+    }
+    else if (((((iVar11 != 6) && (iVar11 != 1)) && (iVar11 != 7)) &&
+             ((iVar11 != 8 && (iVar11 != 9)))) && (iVar11 != 10)) {
+      FUN_000dd078(0);
+    }
+  }
+LAB_000db19a:
+  free(message_data);
+  return;
+}
+```
+Therefore we set DAT_0080be07 not to be 0 in emulator.
 
 # malloc integer overflow bug
 

@@ -43,6 +43,8 @@ def hook_code(uc, address, size, user_data):
     FUN_000d8562 = 0x000D8562
     FUN_000d84c4 = 0x000D84C4
     FUN_000d84ac = 0x000D84AC
+    FUN_000d7f10 = 0x000D7F10
+    FUN_000d7748 = 0x000D7748
 
     diag_tracing_functions = [
         0x0012D534,
@@ -113,7 +115,18 @@ def hook_code(uc, address, size, user_data):
         print(f">>> Found FUN_000d84ac. Skipping and returning to LR: {hex(lr)}")
         uc.reg_write(UC_ARM_REG_PC, lr)
         return
-
+    if address == FUN_000d7f10:
+        lr = uc.reg_read(UC_ARM_REG_LR)
+        r0 = uc.reg_read(UC_ARM_REG_R0)
+        uc.reg_write(UC_ARM_REG_R0, 0xFFFFFFFF)
+        uc.reg_write(UC_ARM_REG_PC, lr)
+        return
+    if address == FUN_000d7748:
+        mu.mem_write(0x20002000, b"unknown string\x00")
+        lr = uc.reg_read(UC_ARM_REG_LR)
+        uc.reg_write(UC_ARM_REG_R0, 0x20002000)
+        uc.reg_write(UC_ARM_REG_PC, lr)
+        return
     if address in diag_tracing_functions:
         lr = uc.reg_read(UC_ARM_REG_LR)
         print(
@@ -141,11 +154,11 @@ def hook_code(uc, address, size, user_data):
     if address == alloc_000d753e:
         num = uc.reg_read(UC_ARM_REG_R0)
         type_size = uc.reg_read(UC_ARM_REG_R1)
-        requested_size = num * type_size
+        requested_size = align_4_bytes(num * type_size)
 
         if requested_size == 0:
             print(
-                f">>> Warning: alloc_000d753e called with num={num}, type={type_size}. Returning null pointer."
+                f">>> Error: alloc_000d753e called with num={num}, type={type_size}. Returning null pointer."
             )
             uc.reg_write(UC_ARM_REG_R0, 0)  # return null pointer
         elif HEAP_PTR + requested_size > HEAP_MAX:
@@ -192,9 +205,8 @@ BASE_ADDRESS = 0x50000
 # start at modem_system_ram end - 4 to avoid going over the edge
 STACK_ADDRESS = 0x20000000 + 0x8000 - 4
 
-# start the heap in the middle of the ram
-HEAP_ADDRESS = 0x20005000
-HEAP_MAX = 0x20007000  # heap size 8KB (arbitrary)
+HEAP_ADDRESS = 0x22000000  # use modem_DSP_ram for heap (bigger than modem_system_ram)
+HEAP_MAX = 0x22020000  # heap size 128KB (previous 8kb triggered many false positives for heap overflow)
 HEAP_PTR = HEAP_ADDRESS
 
 # write AT string outside of heap to avoid overwriting in case of malloc
@@ -239,21 +251,20 @@ try:
         print("Replaying crash from file:", sys.argv[1])
         file_path = sys.argv[1]
         crash_input = open(file_path, "rb").read()
+
+        at_string_bytes = crash_input[14:]
+        at_string = at_string_bytes + b"\x00"
+
         command_id = 1
         flags = 0x00FF
-        unknown_bytes = int.from_bytes(
-            crash_input[4:8], "little"
-        )  # provded by AFL input
+        unknown_bytes = 0
         data_ptr = AT_STRING_ADDRESS
-        data_len = int.from_bytes(
-            crash_input[12:16], "little"
-        )  # size from the crash input
+        data_len = len(at_string_bytes)
         print(f"Data_len = 0x{data_len:x} ({data_len})")
 
         message_data = struct.pack(
             "<HHIII", command_id, flags, unknown_bytes, data_ptr, data_len
         )
-        at_string = crash_input[14 : 14 + min(data_len, 256)] + b"\x00"
         mu.mem_write(AT_STRING_ADDRESS, at_string)
     else:
         # prepare AT command payload
@@ -267,7 +278,7 @@ try:
         # format: command_id (2 bytes) [0], flags (2 bytes) [1], padding (4 bytes) [2],
         # payload pointer (4 bytes) [3], payload length (4 bytes) [4]
         message_data = struct.pack(
-            "<HHIII", 1, 0xFFFF, 0, AT_STRING_ADDRESS, len(payload)
+            "<HHIII", 1, 0x00FF, 0, AT_STRING_ADDRESS, len(payload)
         )
 
     # define outside of heap to avoid overwriting in case of malloc again
@@ -309,7 +320,6 @@ try:
         data_len = struct.unpack_from("<I", bytes(response), 12)[0]
         print(f">>> Response data_ptr: {hex(data_ptr)}, data_len: {data_len}")
 
-        # read the actual response string
         response_str = mu.mem_read(data_ptr, data_len)
         print(f">>> AT response string: {bytes(response_str)}")
 
