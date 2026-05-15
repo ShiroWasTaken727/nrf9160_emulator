@@ -1,4 +1,11 @@
 # week 5
+FUN_00055fe4
+
+gart pages - hex: 0x20
+
+heap - buiten firmware en grote heap
+
+memcpy - heap overflow detection implementeren
 
 Fuzzed for 6 hours exactly. Found 4 potential crashes where the first crash is related to my heap being only 8kb and the fuzzer wrote a string larger than 8kb. The other 3 crashes turned out to be misisng svc calls. After adding the svc calls, everything ran without any crashes, suggesting that so far the firmware has been pretty robust against the fuzzer.
 
