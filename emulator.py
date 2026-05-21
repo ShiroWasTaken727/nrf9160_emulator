@@ -51,6 +51,7 @@ def hook_code(uc, address, size, user_data):
 
     # Todo: remove later
     TEST_HEAP_OVERFLOW = 0xDA896
+    TEST_DOUBLE_FREE = 0x13C79E
 
     sleep = 0x000D7EE6
 
@@ -89,6 +90,17 @@ def hook_code(uc, address, size, user_data):
         back_guard = 0x30000000 + front_guard_size + align_4_bytes(28)
         uc.mem_write(back_guard, b"\xbb")
 
+        # front guard test
+        front_guard = 0x30000000
+        uc.mem_write(front_guard, b"\xbb" * guard_size)
+
+    if address == TEST_DOUBLE_FREE:
+        uc.reg_write(
+            UC_ARM_REG_R0, 0x3000012C
+        )  # put pointer to existing malloc into first argument for free
+        uc.reg_write(UC_ARM_REG_PC, free | 1)  # jump to free using PC and set thumb bit
+        return
+
     if address == FUN_000da004:
         lr = uc.reg_read(UC_ARM_REG_LR)
         uc.reg_write(UC_ARM_REG_R0, 0)  # return 0 = modem not busy
@@ -107,29 +119,39 @@ def hook_code(uc, address, size, user_data):
     if address == free:
         malloc_ptr = uc.reg_read(UC_ARM_REG_R0)
 
-        # Double free could occur if this function already called free with a pointer and gets called again with the same pointer.
-        # or if it frees something without a malloc call first so the entry does not exist in the dictionary.
         if malloc_ptr not in allocs:
-            print(f">>> Double free or unknown pointer detected: {hex(malloc_ptr)}")
+            print(f">>> Unallocated pointer found: {hex(malloc_ptr)}")
+
         else:
-            requested_size = allocs[malloc_ptr]
-            front_guard = uc.mem_read(malloc_ptr - guard_size, guard_size)
-            back_guard = uc.mem_read(
-                malloc_ptr + align_4_bytes(requested_size), guard_size
-            )
+            requested_size, is_freed = allocs[malloc_ptr]
 
-            if bytes(front_guard) != b"\xaa" * guard_size:
-                print(
-                    f">>> Front guard does not match. Heap underflow detected: {hex(malloc_ptr)}"
-                )
-            if bytes(back_guard) != b"\xaa" * guard_size:
-                print(
-                    f">>> Back guard does not match. Heap overflow detected: {hex(malloc_ptr)}"
-                )
+            if is_freed:
+                print(f">>> Double free detected: {hex(malloc_ptr)}")
             else:
-                print(f">>> Freed: {hex(malloc_ptr)}")
+                front_guard = uc.mem_read(malloc_ptr - guard_size, guard_size)
+                back_guard = uc.mem_read(
+                    malloc_ptr + align_4_bytes(requested_size), guard_size
+                )
 
-            del allocs[malloc_ptr]
+                violated = False
+                if bytes(front_guard) != b"\xaa" * guard_size:
+                    print(
+                        f">>> Front guard does not match. Heap underflow detected: {hex(malloc_ptr)}"
+                    )
+                    violated = True
+                if bytes(back_guard) != b"\xaa" * guard_size:
+                    print(
+                        f">>> Back guard does not match. Heap overflow detected: {hex(malloc_ptr)}"
+                    )
+                    violated = True
+
+                if not violated:
+                    print(f">>> Freed: {hex(malloc_ptr)}")
+
+            allocs[malloc_ptr] = (
+                requested_size,
+                True,
+            )  # set freed = true, so if it has been freed before it will detect double free
 
         lr = uc.reg_read(UC_ARM_REG_LR)
         uc.reg_write(UC_ARM_REG_PC, lr)
@@ -201,7 +223,7 @@ def hook_code(uc, address, size, user_data):
             f">>> Found message_malloc. Allocating {requested_size} bytes at {hex(HEAP_PTR)}"
         )
         if HEAP_PTR + malloc_size > HEAP_MAX:
-            print(">>> Heap overflow detected. Cannot allocate more memory.")
+            print(">>> Heap full. Cannot allocate more memory.")
             uc.reg_write(UC_ARM_REG_R0, 0)  # return null pointer
         else:
             # write front guard page
@@ -215,7 +237,10 @@ def hook_code(uc, address, size, user_data):
             uc.mem_write(HEAP_PTR, b"\xaa" * guard_size)
             HEAP_PTR += guard_size
 
-            allocs[req_size_ptr] = requested_size
+            allocs[req_size_ptr] = (
+                requested_size,
+                False,
+            )  # boolean value = freed already yes or no
             uc.reg_write(UC_ARM_REG_R0, req_size_ptr)  # return heap pointer
 
         lr = uc.reg_read(UC_ARM_REG_LR)
@@ -235,7 +260,7 @@ def hook_code(uc, address, size, user_data):
             )
             uc.reg_write(UC_ARM_REG_R0, 0)  # return null pointer
         elif HEAP_PTR + malloc_size > HEAP_MAX:
-            print(f">>> alloc_000d753e: Heap overflow. Returning null pointer.")
+            print(f">>> alloc_000d753e: Heap full. Returning null pointer.")
             uc.reg_write(UC_ARM_REG_R0, 0)
         else:
             # front guard
@@ -249,7 +274,10 @@ def hook_code(uc, address, size, user_data):
             uc.mem_write(HEAP_PTR, b"\xaa" * guard_size)
             HEAP_PTR += guard_size
 
-            allocs[req_size_ptr] = requested_size
+            allocs[req_size_ptr] = (
+                requested_size,
+                False,
+            )  # boolean value = freed already yes or no
             uc.reg_write(UC_ARM_REG_R0, req_size_ptr)  # return heap pointer
 
         lr = uc.reg_read(UC_ARM_REG_LR)
@@ -364,7 +392,7 @@ try:
 
     # add hooks for memory errors, basic blocks (debugging) and for svc instructions
     mu.hook_add(UC_HOOK_MEM_INVALID, hook_memory_invalid)
-    # mu.hook_add(UC_HOOK_BLOCK, hook_block)
+    mu.hook_add(UC_HOOK_BLOCK, hook_block)
     mu.hook_add(UC_HOOK_CODE, hook_code)
 
     # we need to set modem to 1 or else it returns 7 in AT_validate_dispatch meaning that the modem is not ready

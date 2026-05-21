@@ -5,6 +5,28 @@ import unicornafl
 from unicorn import *
 from unicorn.arm_const import *
 
+allocs = {}
+
+# load the firmware into memory
+FIRMWARE = open("modem_firmware.bin", "rb").read()
+BASE_ADDRESS = 0x50000
+
+# start at modem_system_ram end - 4 to avoid going over the edge
+STACK_ADDRESS = 0x20000000 + 0x8000 - 4
+
+# start the heap in the middle of the ram
+HEAP_ADDRESS = 0x30000000
+HEAP_MAX = 0x30100000  # heap size 1MB
+HEAP_PTR = HEAP_ADDRESS
+
+# write AT string outside of heap to avoid overwriting in case of malloc
+AT_STRING_ADDRESS = 0x20004000
+MESSAGE_DATA_ADDR = 0x20003000
+
+# emulation starting point: start of the process_message function in the firmware
+process_message = 0x000DA7E0
+EXIT_ADDRESS = 0xC0FFEE
+
 
 # we need to align the firmware size to 4KB for memory mapping
 def align_size(bytes_size, four_kb=4096):
@@ -17,20 +39,22 @@ def align_4_bytes(requested_size):
 
 # hooking code for svc instructions to handle system calls
 def hook_code(uc, address, size, user_data):
+
     global HEAP_PTR
 
-    sleep = 0x000D7EE6
-    free = 0x000D770E
+    TEST_HEAP_OVERFLOW = 0xDA896
+    TEST_DOUBLE_FREE = 0x13C79E
 
+    sleep = 0x000D7EE6
+
+    guard_size = 0x20
+    free = 0x000D770E
     message_malloc = 0x000D7C16
     alloc_000d753e = 0x000D753E
     alloc_0005c0f4 = 0x0005C0F4
 
-    send_AT_response = 0x000DCF5C
-
     FUN_000dd190 = 0x000DD190
     FUN_000d84bc = 0x000D84BC
-    FUN_000db380 = 0x000DB380
     FUN_000d7ebc = 0x000D7EBC
     FUN_000da004 = 0x000DA004
     FUN_000131ce8 = 0x00131CE8  # pal_msg_send_to
@@ -49,6 +73,25 @@ def hook_code(uc, address, size, user_data):
         0x00066A24,
     ]
 
+    if address == TEST_HEAP_OVERFLOW:
+        # overwrite first malloc backguard to be 0xBB instead pf the default guard size 0xAA
+        front_guard_size = guard_size
+        back_guard = 0x30000000 + front_guard_size + align_4_bytes(28)
+        uc.mem_write(back_guard, b"\xbb")
+
+        # front guard test
+        front_guard = 0x30000000
+        uc.mem_write(front_guard, b"\xbb" * guard_size)
+
+    if address == TEST_DOUBLE_FREE:
+        for k, v in allocs.items():  # key = pointer and v = the tuple
+            if is_freed:
+                uc.reg_write(
+                    UC_ARM_REG_R0, k
+                )  # put pointer address of freed malloc in R0 for free call
+                uc.reg_write(UC_ARM_REG_PC, free | 1)  # call free
+        return
+
     if address == FUN_000da004:
         lr = uc.reg_read(UC_ARM_REG_LR)
         uc.reg_write(UC_ARM_REG_R0, 0)  # return 0 = modem not busy
@@ -60,6 +103,34 @@ def hook_code(uc, address, size, user_data):
         uc.reg_write(UC_ARM_REG_PC, lr)
         return
     if address == free:
+        malloc_ptr = uc.reg_read(UC_ARM_REG_R0)
+
+        if malloc_ptr not in allocs:
+            raise UcError(UC_ERR_EXCEPTION)
+
+        else:
+            requested_size, is_freed = allocs[malloc_ptr]
+
+            if is_freed:
+                raise UcError(UC_ERR_EXCEPTION)
+
+            else:
+                front_guard = uc.mem_read(malloc_ptr - guard_size, guard_size)
+                back_guard = uc.mem_read(
+                    malloc_ptr + align_4_bytes(requested_size), guard_size
+                )
+
+                if bytes(front_guard) != b"\xaa" * guard_size:
+                    raise UcError(UC_ERR_WRITE_PROT)
+
+                if bytes(back_guard) != b"\xaa" * guard_size:
+                    raise UcError(UC_ERR_WRITE_PROT)
+
+            allocs[malloc_ptr] = (
+                requested_size,
+                True,
+            )  # set freed = true, so if it has been freed before it will detect double free
+
         lr = uc.reg_read(UC_ARM_REG_LR)
         uc.reg_write(UC_ARM_REG_PC, lr)
         return
@@ -94,7 +165,6 @@ def hook_code(uc, address, size, user_data):
         return
     if address == FUN_000d7f10:
         lr = uc.reg_read(UC_ARM_REG_LR)
-        r0 = uc.reg_read(UC_ARM_REG_R0)
         uc.reg_write(UC_ARM_REG_R0, 0xFFFFFFFF)
         uc.reg_write(UC_ARM_REG_PC, lr)
         return
@@ -111,11 +181,26 @@ def hook_code(uc, address, size, user_data):
 
     if address == message_malloc or address == alloc_0005c0f4:
         requested_size = uc.reg_read(UC_ARM_REG_R0)
-        if HEAP_PTR + requested_size > HEAP_MAX:
-            uc.reg_write(UC_ARM_REG_R0, 0)  # return null pointer
+        malloc_size = guard_size + align_4_bytes(requested_size) + guard_size
+        if HEAP_PTR + malloc_size > HEAP_MAX:
+            uc.reg_write(UC_ARM_REG_R0, 0)
         else:
-            uc.reg_write(UC_ARM_REG_R0, HEAP_PTR)  # return heap pointer
+            # write front guard page
+            uc.mem_write(HEAP_PTR, b"\xaa" * guard_size)
+            HEAP_PTR += guard_size
+
+            req_size_ptr = HEAP_PTR
             HEAP_PTR += align_4_bytes(requested_size)
+
+            # write back guard page
+            uc.mem_write(HEAP_PTR, b"\xaa" * guard_size)
+            HEAP_PTR += guard_size
+
+            allocs[req_size_ptr] = (
+                requested_size,
+                False,
+            )  # boolean value = freed already yes or no
+            uc.reg_write(UC_ARM_REG_R0, req_size_ptr)  # return heap pointer
 
         lr = uc.reg_read(UC_ARM_REG_LR)
         uc.reg_write(UC_ARM_REG_PC, lr)
@@ -125,42 +210,33 @@ def hook_code(uc, address, size, user_data):
         type_size = uc.reg_read(UC_ARM_REG_R1)
         requested_size = align_4_bytes(num * type_size)
 
+        malloc_size = guard_size + align_4_bytes(requested_size) + guard_size
+
         if requested_size == 0:
-            uc.reg_write(UC_ARM_REG_R0, 0)  # return null pointer
-        elif HEAP_PTR + requested_size > HEAP_MAX:
+            uc.reg_write(UC_ARM_REG_R0, 0)
+        elif HEAP_PTR + malloc_size > HEAP_MAX:
             uc.reg_write(UC_ARM_REG_R0, 0)
         else:
-            uc.reg_write(UC_ARM_REG_R0, HEAP_PTR)  # return heap pointer
+            # front guard
+            uc.mem_write(HEAP_PTR, b"\xaa" * guard_size)
+            HEAP_PTR += guard_size
+
+            req_size_ptr = HEAP_PTR
             HEAP_PTR += align_4_bytes(requested_size)
+
+            # back guard
+            uc.mem_write(HEAP_PTR, b"\xaa" * guard_size)
+            HEAP_PTR += guard_size
+
+            allocs[req_size_ptr] = (
+                requested_size,
+                False,
+            )  # boolean value = freed already yes or no
+            uc.reg_write(UC_ARM_REG_R0, req_size_ptr)  # return heap pointer
+
         lr = uc.reg_read(UC_ARM_REG_LR)
         uc.reg_write(UC_ARM_REG_PC, lr)
         return
-
-    if address == 0x0 or address == 0xC0FFEE:
-        # force the emulator to stop instantly for a clean terminal output
-        uc.emu_stop()
-        return
-
-
-# load the firmware into memory
-FIRMWARE = open("modem_firmware.bin", "rb").read()
-BASE_ADDRESS = 0x50000
-
-# start at modem_system_ram end - 4 to avoid going over the edge
-STACK_ADDRESS = 0x20000000 + 0x8000 - 4
-
-# start the heap in the middle of the ram
-HEAP_ADDRESS = 0x20005000
-HEAP_MAX = 0x20007000  # heap size 8KB (arbitrary)
-HEAP_PTR = HEAP_ADDRESS
-
-# write AT string outside of heap to avoid overwriting in case of malloc
-AT_STRING_ADDRESS = 0x20004000
-MESSAGE_DATA_ADDR = 0x20003000
-
-# emulation starting point: start of the process_message function in the firmware
-process_message = 0x000DA7E0
-EXIT_ADDRESS = 0xC0FFEE
 
 
 # set up Unicorn emulator
@@ -183,6 +259,7 @@ try:
     mu.mem_map(0x22000000, 0x20000)  # modem_DSP_ram
     mu.mem_map(0x40000000, 0x20000000)  # peripheral
     mu.mem_map(0xE0000000, 0x20000000)  # system_SYS
+    mu.mem_map(0x30000000, 0x100000)  # custom heap 1MB
 
     mu.mem_write(0x800000, FIRMWARE[0x19658 : 0x19658 + 0x7C8])
     mu.mem_write(0x80A000, FIRMWARE[0x16F238 : 0x16F238 + 0x1E88])
@@ -196,7 +273,9 @@ except UcError as e:
 
 # per-round fuzzing function that will be called by UnicornAFL
 def place_afl_bytes(uc, input_bytes, persistent_round, data):
-    global HEAP_PTR
+    global HEAP_PTR, allocs
+    HEAP_PTR = HEAP_ADDRESS
+    allocs = {}  # reset alloc dict each fuzz round
 
     # reject 14 byte inputs since message struct needs to be at least 14 bytes
     if len(input_bytes) < 1:
