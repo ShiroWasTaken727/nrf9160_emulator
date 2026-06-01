@@ -19,7 +19,7 @@ HEAP_MAX = 0x30100000  # heap size 1MB
 HEAP_PTR = HEAP_ADDRESS
 
 # write AT string outside of heap to avoid overwriting in case of malloc
-AT_STRING_ADDRESS = 0x20004000
+AT_STRING_ADDRESS = 0x31000000
 MESSAGE_DATA_ADDR = 0x0  # we will write the message structure here later
 
 # emulation starting point: start of the process_message function in the firmware
@@ -49,9 +49,9 @@ def hook_code(uc, address, size, user_data):
 
     global HEAP_PTR
 
-    # Todo: remove later
-    TEST_HEAP_OVERFLOW = 0xDA896
-    TEST_DOUBLE_FREE = 0x13C79E
+    # TODO: remove later
+    # TEST_HEAP_OVERFLOW = 0xDA896
+    # TEST_DOUBLE_FREE = 0x13C79E
 
     sleep = 0x000D7EE6
 
@@ -84,22 +84,28 @@ def hook_code(uc, address, size, user_data):
         0x00066A24,
     ]
 
-    if address == TEST_HEAP_OVERFLOW:
-        # overwrite first malloc backguard to be 0xBB instead pf the default guard size 0xAA
-        front_guard_size = guard_size
-        back_guard = 0x30000000 + front_guard_size + align_4_bytes(28)
-        uc.mem_write(back_guard, b"\xbb")
+    # if address == TEST_HEAP_OVERFLOW:
+    #     print(">>> Testing heap overflow detection")
+    #     # overwrite first malloc backguard to be 0xBB instead pf the default guard size 0xAA
+    #     front_guard_size = guard_size
+    #     back_guard = 0x30000000 + front_guard_size + align_4_bytes(28)
+    #     uc.mem_write(back_guard, b"\xbb")
 
-        # front guard test
-        front_guard = 0x30000000
-        uc.mem_write(front_guard, b"\xbb" * guard_size)
+    #     # front guard test
+    #     front_guard = 0x30000000
+    #     uc.mem_write(front_guard, b"\xbb" * guard_size)
 
-    if address == TEST_DOUBLE_FREE:
-        uc.reg_write(
-            UC_ARM_REG_R0, 0x3000012C
-        )  # put pointer to existing malloc into first argument for free
-        uc.reg_write(UC_ARM_REG_PC, free | 1)  # jump to free using PC and set thumb bit
-        return
+    # if address == TEST_DOUBLE_FREE:
+    #     print(">>> Testing double free detection")
+    #     for pointer, (
+    #         size,
+    #         is_freed,
+    #     ) in allocs.items():  # find first allocated pointer to free twice
+    #         if is_freed:
+    #             uc.reg_write(UC_ARM_REG_R0, pointer)
+    #             uc.reg_write(UC_ARM_REG_PC, free | 1)
+    #             return
+    #     return
 
     if address == FUN_000da004:
         lr = uc.reg_read(UC_ARM_REG_LR)
@@ -127,6 +133,7 @@ def hook_code(uc, address, size, user_data):
 
             if is_freed:
                 print(f">>> Double free detected: {hex(malloc_ptr)}")
+                raise UcError(UC_ERR_EXCEPTION)
             else:
                 front_guard = uc.mem_read(malloc_ptr - guard_size, guard_size)
                 back_guard = uc.mem_read(
@@ -145,7 +152,9 @@ def hook_code(uc, address, size, user_data):
                     )
                     violated = True
 
-                if not violated:
+                if violated:
+                    raise UcError(UC_ERR_EXCEPTION)
+                else:
                     print(f">>> Freed: {hex(malloc_ptr)}")
 
             allocs[malloc_ptr] = (
@@ -335,6 +344,7 @@ try:
     mu.mem_map(0x40000000, 0x20000000)  # peripheral
     mu.mem_map(0xE0000000, 0x20000000)  # system_SYS
     mu.mem_map(0x30000000, 0x100000)  # custom heap
+    mu.mem_map(0x31000000, 0x100000)  # custom AT string
 
     mu.mem_write(0x800000, FIRMWARE[0x19658 : 0x19658 + 0x7C8])
     mu.mem_write(0x80A000, FIRMWARE[0x16F238 : 0x16F238 + 0x1E88])

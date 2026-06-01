@@ -1,4 +1,7 @@
 # week 5
+-v 
+export AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1
+
 FUN_00055fe4
 
 gart pages - hex: 0x20

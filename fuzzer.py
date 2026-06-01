@@ -42,8 +42,9 @@ def hook_code(uc, address, size, user_data):
 
     global HEAP_PTR
 
-    TEST_HEAP_OVERFLOW = 0xDA896
-    TEST_DOUBLE_FREE = 0x13C79E
+    # TODO: remove later
+    # TEST_HEAP_OVERFLOW = 0xDA896
+    # TEST_DOUBLE_FREE = 0x13C79E
 
     sleep = 0x000D7EE6
 
@@ -73,24 +74,28 @@ def hook_code(uc, address, size, user_data):
         0x00066A24,
     ]
 
-    if address == TEST_HEAP_OVERFLOW:
-        # overwrite first malloc backguard to be 0xBB instead pf the default guard size 0xAA
-        front_guard_size = guard_size
-        back_guard = 0x30000000 + front_guard_size + align_4_bytes(28)
-        uc.mem_write(back_guard, b"\xbb")
+    # if address == TEST_HEAP_OVERFLOW:
+    #     # overwrite first malloc backguard to be 0xBB instead pf the default guard size 0xAA
+    #     front_guard_size = guard_size
+    #     back_guard = 0x30000000 + front_guard_size + align_4_bytes(28)
+    #     uc.mem_write(back_guard, b"\xbb")
 
-        # front guard test
-        front_guard = 0x30000000
-        uc.mem_write(front_guard, b"\xbb" * guard_size)
+    #     # front guard test
+    #     front_guard = 0x30000000
+    #     uc.mem_write(front_guard, b"\xbb" * guard_size)
 
-    if address == TEST_DOUBLE_FREE:
-        for k, v in allocs.items():  # key = pointer and v = the tuple
-            if is_freed:
-                uc.reg_write(
-                    UC_ARM_REG_R0, k
-                )  # put pointer address of freed malloc in R0 for free call
-                uc.reg_write(UC_ARM_REG_PC, free | 1)  # call free
-        return
+    # if address == TEST_DOUBLE_FREE:
+    #     for pointer, (
+    #         size,
+    #         is_freed,
+    #     ) in allocs.items():
+    #         if is_freed:
+    #             uc.reg_write(
+    #                 UC_ARM_REG_R0, pointer
+    #             )  # put pointer address of freed malloc in R0 for free call
+    #             uc.reg_write(UC_ARM_REG_PC, free | 1)  # call free
+    #             return
+    #     return
 
     if address == FUN_000da004:
         lr = uc.reg_read(UC_ARM_REG_LR)
@@ -106,13 +111,15 @@ def hook_code(uc, address, size, user_data):
         malloc_ptr = uc.reg_read(UC_ARM_REG_R0)
 
         if malloc_ptr not in allocs:
-            raise UcError(UC_ERR_EXCEPTION)
+            uc.reg_write(UC_ARM_REG_PC, 0xDEADBEEF)
+            return
 
         else:
             requested_size, is_freed = allocs[malloc_ptr]
 
             if is_freed:
-                raise UcError(UC_ERR_EXCEPTION)
+                uc.reg_write(UC_ARM_REG_PC, 0xDEADBEEF)
+                return
 
             else:
                 front_guard = uc.mem_read(malloc_ptr - guard_size, guard_size)
@@ -121,10 +128,12 @@ def hook_code(uc, address, size, user_data):
                 )
 
                 if bytes(front_guard) != b"\xaa" * guard_size:
-                    raise UcError(UC_ERR_WRITE_PROT)
+                    uc.reg_write(UC_ARM_REG_PC, 0xDEADBEEF)
+                    return
 
                 if bytes(back_guard) != b"\xaa" * guard_size:
-                    raise UcError(UC_ERR_WRITE_PROT)
+                    uc.reg_write(UC_ARM_REG_PC, 0xDEADBEEF)
+                    return
 
             allocs[malloc_ptr] = (
                 requested_size,
