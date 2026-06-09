@@ -74,6 +74,7 @@ def hook_code(uc, address, size, user_data):
     FUN_000d84ac = 0x000D84AC
     FUN_000d7f10 = 0x000D7F10
     FUN_000d7748 = 0x000D7748
+    FUN_000d8550 = 0x000D8550
 
     diag_tracing_functions = [
         0x0012D534,
@@ -217,6 +218,9 @@ def hook_code(uc, address, size, user_data):
         uc.reg_write(UC_ARM_REG_R0, 0x20002000)
         uc.reg_write(UC_ARM_REG_PC, lr)
         return
+    if address == FUN_000d8550:
+        lr = mu.reg_read(UC_ARM_REG_LR)
+        mu.reg_write(UC_ARM_REG_PC, lr - 1)
     if address in diag_tracing_functions:
         lr = uc.reg_read(UC_ARM_REG_LR)
         print(
@@ -402,7 +406,7 @@ try:
 
     # add hooks for memory errors, basic blocks (debugging) and for svc instructions
     mu.hook_add(UC_HOOK_MEM_INVALID, hook_memory_invalid)
-    mu.hook_add(UC_HOOK_BLOCK, hook_block)
+    # mu.hook_add(UC_HOOK_BLOCK, hook_block)
     mu.hook_add(UC_HOOK_CODE, hook_code)
 
     # we need to set modem to 1 or else it returns 7 in AT_validate_dispatch meaning that the modem is not ready

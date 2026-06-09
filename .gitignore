@@ -3,4 +3,9 @@ input/
 output/
 all_results/
 at_strings.txt
-p_m_int_overflow_malloc_replay.log
+.gitignore
+coverage_results_output_run_*_ghidra.json
+coverage_results_output_run_*.json
+coverage_results.json
+run_plots.sh
+output_run_*/

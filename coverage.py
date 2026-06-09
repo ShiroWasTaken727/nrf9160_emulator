@@ -4,10 +4,11 @@ import re
 import json
 import subprocess
 
-output_dir = "output"
-
 if len(sys.argv) > 1:
     output_dir = sys.argv[1]
+else:
+    print("No output directory provided, try again.")
+    exit(1)
 
 # collect all files from the queue
 queue_files = []
@@ -25,6 +26,10 @@ for entry in os.scandir(output_dir):
     for file_name in os.scandir(queue_directory):
         if file_name.name.startswith("id:"):
             time_field = re.search(r"time:(\d+)", file_name.name)
+
+            if not time_field:
+                continue
+
             timestamp = int(time_field.group(1))
             queue_files.append((timestamp, file_name.path))
 
@@ -49,6 +54,7 @@ for file_index, (stamp, fname) in enumerate(
                 blocks.add(basic_block_hex)
 
     before_update = len(cumulative_blocks)
+    new_in_this_step = blocks - cumulative_blocks
     cumulative_blocks.update(blocks)
 
     after_update = len(cumulative_blocks)
@@ -64,17 +70,18 @@ for file_index, (stamp, fname) in enumerate(
             "time": stamp,
             "new total unique blocks": after_update,
             "new blocks found": new_block_count,
+            "new blocks": [hex(b) for b in new_in_this_step],
         }
     )
 
-    results = {
-        "total unique blocks": len(cumulative_blocks),
-        "total inputs": len(queue_files),
-        "blocks": [hex(b) for b in cumulative_blocks],
-        "coverage over time": coverage_over_time,
-    }
-    print(results)
+results = {
+    "total unique blocks": len(cumulative_blocks),
+    "total inputs": len(queue_files),
+    "blocks": [hex(b) for b in cumulative_blocks],
+    "coverage over time": coverage_over_time,
+}
 
 # write results to json file
-with open("coverage_results.json", "w") as file:
-    json.dump(results, file)
+run_name = os.path.basename(output_dir.rstrip("/"))
+with open(f"coverage_results_{run_name}.json", "w") as file:
+    json.dump(results, file, indent=2)
