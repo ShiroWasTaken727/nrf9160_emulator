@@ -20,12 +20,15 @@ HEAP_MAX = 0x30100000  # heap size 1MB
 HEAP_PTR = HEAP_ADDRESS
 
 # write AT string outside of heap to avoid overwriting in case of malloc
-AT_STRING_ADDRESS = 0x20004000
+AT_STRING_ADDRESS = 0x31000000
 MESSAGE_DATA_ADDR = 0x20003000
 
 # emulation starting point: start of the process_message function in the firmware
 process_message = 0x000DA7E0
 EXIT_ADDRESS = 0xC0FFEE
+
+# guard page size for heap allocations to detect overflows and underflows
+GUARD_SIZE = 0x20
 
 
 # we need to align the firmware size to 4KB for memory mapping
@@ -37,215 +40,113 @@ def align_4_bytes(requested_size):
     return math.ceil(requested_size / 4) * 4
 
 
-# hooking code for svc instructions to handle system calls
-def hook_code(uc, address, size, user_data):
+def hook_skip(uc, address, size, user_data):
+    lr = uc.reg_read(UC_ARM_REG_LR)
+    uc.reg_write(UC_ARM_REG_PC, lr)
 
+
+def hook_da004(uc, address, size, user_data):
+    lr = uc.reg_read(UC_ARM_REG_LR)
+    uc.reg_write(UC_ARM_REG_R0, 0)
+    uc.reg_write(UC_ARM_REG_PC, lr)
+
+
+def hook_d7f10(uc, address, size, user_data):
+    lr = uc.reg_read(UC_ARM_REG_LR)
+    uc.reg_write(UC_ARM_REG_R0, 0xFFFFFFFF)
+    uc.reg_write(UC_ARM_REG_PC, lr)
+
+
+def hook_d7748(uc, address, size, user_data):
+    uc.mem_write(0x20002000, b"unknown string\x00")
+    lr = uc.reg_read(UC_ARM_REG_LR)
+    uc.reg_write(UC_ARM_REG_R0, 0x20002000)
+    uc.reg_write(UC_ARM_REG_PC, lr)
+
+
+def hook_free(uc, address, size, user_data):
+    malloc_ptr = uc.reg_read(UC_ARM_REG_R0)
+
+    if malloc_ptr not in allocs:
+        uc.reg_write(UC_ARM_REG_PC, 0xDEADBEEF)
+        return
+
+    requested_size, is_freed = allocs[malloc_ptr]
+
+    if is_freed:
+        uc.reg_write(UC_ARM_REG_PC, 0xDEADBEEF)
+        return
+
+    front_guard = uc.mem_read(malloc_ptr - GUARD_SIZE, GUARD_SIZE)
+    back_guard = uc.mem_read(malloc_ptr + align_4_bytes(requested_size), GUARD_SIZE)
+
+    if bytes(front_guard) != b"\xaa" * GUARD_SIZE:
+        uc.reg_write(UC_ARM_REG_PC, 0xDEADBEEF)
+        return
+
+    if bytes(back_guard) != b"\xaa" * GUARD_SIZE:
+        uc.reg_write(UC_ARM_REG_PC, 0xDEADBEEF)
+        return
+
+    allocs[malloc_ptr] = (requested_size, True)
+
+    lr = uc.reg_read(UC_ARM_REG_LR)
+    uc.reg_write(UC_ARM_REG_PC, lr)
+
+
+def hook_malloc(uc, address, size, user_data):
     global HEAP_PTR
 
-    # TODO: remove later
-    # TEST_HEAP_OVERFLOW = 0xDA896
-    # TEST_DOUBLE_FREE = 0x13C79E
+    requested_size = uc.reg_read(UC_ARM_REG_R0)
+    malloc_size = GUARD_SIZE + align_4_bytes(requested_size) + GUARD_SIZE
 
-    sleep = 0x000D7EE6
+    if HEAP_PTR + malloc_size > HEAP_MAX:
+        uc.reg_write(UC_ARM_REG_R0, 0)
+    else:
+        uc.mem_write(HEAP_PTR, b"\xaa" * GUARD_SIZE)
+        HEAP_PTR += GUARD_SIZE
 
-    guard_size = 0x20
-    free = 0x000D770E
-    message_malloc = 0x000D7C16
-    alloc_000d753e = 0x000D753E
-    alloc_0005c0f4 = 0x0005C0F4
+        req_size_ptr = HEAP_PTR
+        HEAP_PTR += align_4_bytes(requested_size)
 
-    FUN_000dd190 = 0x000DD190
-    FUN_000d84bc = 0x000D84BC
-    FUN_000d7ebc = 0x000D7EBC
-    FUN_000da004 = 0x000DA004
-    FUN_000131ce8 = 0x00131CE8  # pal_msg_send_to
-    FUN_000d8562 = 0x000D8562
-    FUN_000d84c4 = 0x000D84C4
-    FUN_000d84ac = 0x000D84AC
-    FUN_000d7f10 = 0x000D7F10
-    FUN_000d7748 = 0x000D7748
+        uc.mem_write(HEAP_PTR, b"\xaa" * GUARD_SIZE)
+        HEAP_PTR += GUARD_SIZE
 
-    diag_tracing_functions = [
-        0x0012D534,
-        0x0012D55E,
-        0x00066998,
-        0x0012D348,
-        0x0012CF40,
-        0x00066A24,
-    ]
+        allocs[req_size_ptr] = (requested_size, False)
+        uc.reg_write(UC_ARM_REG_R0, req_size_ptr)
 
-    # if address == TEST_HEAP_OVERFLOW:
-    #     # overwrite first malloc backguard to be 0xBB instead pf the default guard size 0xAA
-    #     front_guard_size = guard_size
-    #     back_guard = 0x30000000 + front_guard_size + align_4_bytes(28)
-    #     uc.mem_write(back_guard, b"\xbb")
+    lr = uc.reg_read(UC_ARM_REG_LR)
+    uc.reg_write(UC_ARM_REG_PC, lr)
 
-    #     # front guard test
-    #     front_guard = 0x30000000
-    #     uc.mem_write(front_guard, b"\xbb" * guard_size)
 
-    # if address == TEST_DOUBLE_FREE:
-    #     for pointer, (
-    #         size,
-    #         is_freed,
-    #     ) in allocs.items():
-    #         if is_freed:
-    #             uc.reg_write(
-    #                 UC_ARM_REG_R0, pointer
-    #             )  # put pointer address of freed malloc in R0 for free call
-    #             uc.reg_write(UC_ARM_REG_PC, free | 1)  # call free
-    #             return
-    #     return
+def hook_alloc_000d753e(uc, address, size, user_data):
+    global HEAP_PTR
 
-    if address == FUN_000da004:
-        lr = uc.reg_read(UC_ARM_REG_LR)
-        uc.reg_write(UC_ARM_REG_R0, 0)  # return 0 = modem not busy
-        uc.reg_write(UC_ARM_REG_PC, lr)
-        return
+    num = uc.reg_read(UC_ARM_REG_R0)
+    type_size = uc.reg_read(UC_ARM_REG_R1)
+    requested_size = align_4_bytes(num * type_size)
 
-    if address == sleep:
-        lr = uc.reg_read(UC_ARM_REG_LR)
-        uc.reg_write(UC_ARM_REG_PC, lr)
-        return
-    if address == free:
-        malloc_ptr = uc.reg_read(UC_ARM_REG_R0)
+    malloc_size = GUARD_SIZE + align_4_bytes(requested_size) + GUARD_SIZE
 
-        if malloc_ptr not in allocs:
-            uc.reg_write(UC_ARM_REG_PC, 0xDEADBEEF)
-            return
+    if requested_size == 0:
+        uc.reg_write(UC_ARM_REG_R0, 0)
+    elif HEAP_PTR + malloc_size > HEAP_MAX:
+        uc.reg_write(UC_ARM_REG_R0, 0)
+    else:
+        uc.mem_write(HEAP_PTR, b"\xaa" * GUARD_SIZE)
+        HEAP_PTR += GUARD_SIZE
 
-        else:
-            requested_size, is_freed = allocs[malloc_ptr]
+        req_size_ptr = HEAP_PTR
+        HEAP_PTR += align_4_bytes(requested_size)
 
-            if is_freed:
-                uc.reg_write(UC_ARM_REG_PC, 0xDEADBEEF)
-                return
+        uc.mem_write(HEAP_PTR, b"\xaa" * GUARD_SIZE)
+        HEAP_PTR += GUARD_SIZE
 
-            else:
-                front_guard = uc.mem_read(malloc_ptr - guard_size, guard_size)
-                back_guard = uc.mem_read(
-                    malloc_ptr + align_4_bytes(requested_size), guard_size
-                )
+        allocs[req_size_ptr] = (requested_size, False)
+        uc.reg_write(UC_ARM_REG_R0, req_size_ptr)
 
-                if bytes(front_guard) != b"\xaa" * guard_size:
-                    uc.reg_write(UC_ARM_REG_PC, 0xDEADBEEF)
-                    return
-
-                if bytes(back_guard) != b"\xaa" * guard_size:
-                    uc.reg_write(UC_ARM_REG_PC, 0xDEADBEEF)
-                    return
-
-            allocs[malloc_ptr] = (
-                requested_size,
-                True,
-            )  # set freed = true, so if it has been freed before it will detect double free
-
-        lr = uc.reg_read(UC_ARM_REG_LR)
-        uc.reg_write(UC_ARM_REG_PC, lr)
-        return
-
-    if address == FUN_000dd190:
-        lr = uc.reg_read(UC_ARM_REG_LR)
-        uc.reg_write(UC_ARM_REG_PC, lr)
-        return
-    if address == FUN_000d84bc:
-        lr = uc.reg_read(UC_ARM_REG_LR)
-        uc.reg_write(UC_ARM_REG_PC, lr)
-        return
-    if address == FUN_000d7ebc:
-        lr = uc.reg_read(UC_ARM_REG_LR)
-        uc.reg_write(UC_ARM_REG_PC, lr)
-        return
-    if address == FUN_000131ce8:
-        lr = uc.reg_read(UC_ARM_REG_LR)
-        uc.reg_write(UC_ARM_REG_PC, lr)
-        return
-    if address == FUN_000d8562:
-        lr = uc.reg_read(UC_ARM_REG_LR)
-        uc.reg_write(UC_ARM_REG_PC, lr)
-        return
-    if address == FUN_000d84c4:
-        lr = uc.reg_read(UC_ARM_REG_LR)
-        uc.reg_write(UC_ARM_REG_PC, lr)
-        return
-    if address == FUN_000d84ac:
-        lr = uc.reg_read(UC_ARM_REG_LR)
-        uc.reg_write(UC_ARM_REG_PC, lr)
-        return
-    if address == FUN_000d7f10:
-        lr = uc.reg_read(UC_ARM_REG_LR)
-        uc.reg_write(UC_ARM_REG_R0, 0xFFFFFFFF)
-        uc.reg_write(UC_ARM_REG_PC, lr)
-        return
-    if address == FUN_000d7748:
-        mu.mem_write(0x20002000, b"unknown string\x00")
-        lr = uc.reg_read(UC_ARM_REG_LR)
-        uc.reg_write(UC_ARM_REG_R0, 0x20002000)
-        uc.reg_write(UC_ARM_REG_PC, lr)
-        return
-    if address in diag_tracing_functions:
-        lr = uc.reg_read(UC_ARM_REG_LR)
-        uc.reg_write(UC_ARM_REG_PC, lr)
-        return
-
-    if address == message_malloc or address == alloc_0005c0f4:
-        requested_size = uc.reg_read(UC_ARM_REG_R0)
-        malloc_size = guard_size + align_4_bytes(requested_size) + guard_size
-        if HEAP_PTR + malloc_size > HEAP_MAX:
-            uc.reg_write(UC_ARM_REG_R0, 0)
-        else:
-            # write front guard page
-            uc.mem_write(HEAP_PTR, b"\xaa" * guard_size)
-            HEAP_PTR += guard_size
-
-            req_size_ptr = HEAP_PTR
-            HEAP_PTR += align_4_bytes(requested_size)
-
-            # write back guard page
-            uc.mem_write(HEAP_PTR, b"\xaa" * guard_size)
-            HEAP_PTR += guard_size
-
-            allocs[req_size_ptr] = (
-                requested_size,
-                False,
-            )  # boolean value = freed already yes or no
-            uc.reg_write(UC_ARM_REG_R0, req_size_ptr)  # return heap pointer
-
-        lr = uc.reg_read(UC_ARM_REG_LR)
-        uc.reg_write(UC_ARM_REG_PC, lr)
-        return
-    if address == alloc_000d753e:
-        num = uc.reg_read(UC_ARM_REG_R0)
-        type_size = uc.reg_read(UC_ARM_REG_R1)
-        requested_size = align_4_bytes(num * type_size)
-
-        malloc_size = guard_size + align_4_bytes(requested_size) + guard_size
-
-        if requested_size == 0:
-            uc.reg_write(UC_ARM_REG_R0, 0)
-        elif HEAP_PTR + malloc_size > HEAP_MAX:
-            uc.reg_write(UC_ARM_REG_R0, 0)
-        else:
-            # front guard
-            uc.mem_write(HEAP_PTR, b"\xaa" * guard_size)
-            HEAP_PTR += guard_size
-
-            req_size_ptr = HEAP_PTR
-            HEAP_PTR += align_4_bytes(requested_size)
-
-            # back guard
-            uc.mem_write(HEAP_PTR, b"\xaa" * guard_size)
-            HEAP_PTR += guard_size
-
-            allocs[req_size_ptr] = (
-                requested_size,
-                False,
-            )  # boolean value = freed already yes or no
-            uc.reg_write(UC_ARM_REG_R0, req_size_ptr)  # return heap pointer
-
-        lr = uc.reg_read(UC_ARM_REG_LR)
-        uc.reg_write(UC_ARM_REG_PC, lr)
-        return
+    lr = uc.reg_read(UC_ARM_REG_LR)
+    uc.reg_write(UC_ARM_REG_PC, lr)
 
 
 # set up Unicorn emulator
@@ -261,7 +162,7 @@ try:
 
     # map memory regions
     mu.mem_map(0x0, 0x1000)  # modem_reg_dump
-    mu.mem_map(0x240000, 0x40000)  # modem_fota_area
+    mu.mem_map(0x240000, 0x40000)  # modem_fota_areaf
     mu.mem_map(0x800000, 0x8000)  # covers tcm_copy + tcm1
     mu.mem_map(0x80A000, 0x26000)  # covers tcm_copy2 + tcm2
     mu.mem_map(0x20000000, 0x8000)  # modem_system_ram
@@ -269,12 +170,44 @@ try:
     mu.mem_map(0x40000000, 0x20000000)  # peripheral
     mu.mem_map(0xE0000000, 0x20000000)  # system_SYS
     mu.mem_map(0x30000000, 0x100000)  # custom heap 1MB
+    mu.mem_map(0x31000000, 0x100000)  # custom AT string
 
     mu.mem_write(0x800000, FIRMWARE[0x19658 : 0x19658 + 0x7C8])
     mu.mem_write(0x80A000, FIRMWARE[0x16F238 : 0x16F238 + 0x1E88])
 
-    # add hooks for memory errors and for svc instructions
-    mu.hook_add(UC_HOOK_CODE, hook_code)
+    skip_addresses = [
+        0x000D7EE6,  # sleep
+        0x000DD190,  # FUN_000dd190
+        0x000D84BC,  # FUN_000d84bc
+        0x000D7EBC,  # FUN_000d7ebc
+        0x00131CE8,  # pal_msg_send_to
+        0x000D8562,  # FUN_000d8562
+        0x000D84C4,  # FUN_000d84c4
+        0x000D84AC,  # FUN_000d84ac
+        0x000D8550,  # FUN_000d8550
+        0x0012D534,  # diag tracing
+        0x0012D55E,  # diag tracing
+        0x00066998,  # diag tracing
+        0x0012D348,  # diag tracing
+        0x0012CF40,  # diag tracing
+        0x00066A24,  # diag tracing
+    ]
+
+    for addr in skip_addresses:
+        mu.hook_add(UC_HOOK_CODE, hook_skip, begin=addr, end=addr + 1)
+
+    # functions with custom return values
+    mu.hook_add(UC_HOOK_CODE, hook_da004, begin=0x000DA004, end=0x000DA004 + 1)
+    mu.hook_add(UC_HOOK_CODE, hook_d7f10, begin=0x000D7F10, end=0x000D7F10 + 1)
+    mu.hook_add(UC_HOOK_CODE, hook_d7748, begin=0x000D7748, end=0x000D7748 + 1)
+
+    # free
+    mu.hook_add(UC_HOOK_CODE, hook_free, begin=0x000D770E, end=0x000D770E + 1)
+
+    # malloc functions
+    mu.hook_add(UC_HOOK_CODE, hook_malloc, begin=0x000D7C16, end=0x000D7C16 + 1)
+    mu.hook_add(UC_HOOK_CODE, hook_malloc, begin=0x0005C0F4, end=0x0005C0F4 + 1)
+    mu.hook_add(UC_HOOK_CODE, hook_alloc_000d753e, begin=0x000D753E, end=0x000D753E + 1)
 
 except UcError as e:
     exit(1)
@@ -286,31 +219,26 @@ def place_afl_bytes(uc, input_bytes, persistent_round, data):
     HEAP_PTR = HEAP_ADDRESS
     allocs = {}  # reset alloc dict each fuzz round
 
-    # reject 14 byte inputs since message struct needs to be at least 14 bytes
     if len(input_bytes) < 1:
         return False
 
     HEAP_PTR = HEAP_ADDRESS
 
     # we need to set modem to 1 or else it returns 7 in AT_validate_dispatch meaning that the modem is not ready
-    mu.mem_write(0x0080BE07, b"\x01")
+    uc.mem_write(0x0080BE07, b"\x01")
 
-    at_string_bytes = input_bytes[14:]
-    at_string = at_string_bytes + b"\x00"
-
-    # construct message struct
+    # construct message struct (keep header fixed)
     command_id = 1
     flags = 0x00FF
     unknown_bytes = 0
     data_ptr = AT_STRING_ADDRESS  # point to the AT string in memory
-    data_len = len(at_string_bytes)
+    data_len = len(input_bytes)
 
     msg = struct.pack("<HHIII", command_id, flags, unknown_bytes, data_ptr, data_len)
     uc.mem_write(MESSAGE_DATA_ADDR, msg)
 
-    # clear old data first and write new AT string to memory for this round
-    uc.mem_write(AT_STRING_ADDRESS, b"\x00" * 256)
-    uc.mem_write(AT_STRING_ADDRESS, at_string)
+    uc.mem_write(AT_STRING_ADDRESS, input_bytes)
+    uc.mem_write(AT_STRING_ADDRESS + len(input_bytes), b"\x00")
 
     # Reset CPU states for this round
     uc.reg_write(UC_ARM_REG_R0, MESSAGE_DATA_ADDR)

@@ -20,7 +20,7 @@ HEAP_PTR = HEAP_ADDRESS
 
 # write AT string outside of heap to avoid overwriting in case of malloc
 AT_STRING_ADDRESS = 0x31000000
-MESSAGE_DATA_ADDR = 0x0  # we will write the message structure here later
+MESSAGE_DATA_ADDR = 0x20003000
 
 # emulation starting point: start of the process_message function in the firmware
 process_message = 0x000DA7E0
@@ -85,35 +85,13 @@ def hook_code(uc, address, size, user_data):
         0x00066A24,
     ]
 
-    # if address == TEST_HEAP_OVERFLOW:
-    #     print(">>> Testing heap overflow detection")
-    #     # overwrite first malloc backguard to be 0xBB instead pf the default guard size 0xAA
-    #     front_guard_size = guard_size
-    #     back_guard = 0x30000000 + front_guard_size + align_4_bytes(28)
-    #     uc.mem_write(back_guard, b"\xbb")
-
-    #     # front guard test
-    #     front_guard = 0x30000000
-    #     uc.mem_write(front_guard, b"\xbb" * guard_size)
-
-    # if address == TEST_DOUBLE_FREE:
-    #     print(">>> Testing double free detection")
-    #     for pointer, (
-    #         size,
-    #         is_freed,
-    #     ) in allocs.items():  # find first allocated pointer to free twice
-    #         if is_freed:
-    #             uc.reg_write(UC_ARM_REG_R0, pointer)
-    #             uc.reg_write(UC_ARM_REG_PC, free | 1)
-    #             return
-    #     return
-
     if address == FUN_000da004:
         lr = uc.reg_read(UC_ARM_REG_LR)
         uc.reg_write(UC_ARM_REG_R0, 0)  # return 0 = modem not busy
         uc.reg_write(UC_ARM_REG_PC, lr)
         return
 
+    # print hook
     if address == 0xDA7E0:
         lr = uc.reg_read(UC_ARM_REG_LR)
         print(f">>> At function entry, LR={hex(lr)}")
@@ -213,14 +191,15 @@ def hook_code(uc, address, size, user_data):
         uc.reg_write(UC_ARM_REG_PC, lr)
         return
     if address == FUN_000d7748:
-        mu.mem_write(0x20002000, b"unknown string\x00")
+        uc.mem_write(0x20002000, b"unknown string\x00")
         lr = uc.reg_read(UC_ARM_REG_LR)
         uc.reg_write(UC_ARM_REG_R0, 0x20002000)
         uc.reg_write(UC_ARM_REG_PC, lr)
         return
     if address == FUN_000d8550:
-        lr = mu.reg_read(UC_ARM_REG_LR)
-        mu.reg_write(UC_ARM_REG_PC, lr - 1)
+        lr = uc.reg_read(UC_ARM_REG_LR)
+        uc.reg_write(UC_ARM_REG_PC, lr)
+        return
     if address in diag_tracing_functions:
         lr = uc.reg_read(UC_ARM_REG_LR)
         print(
@@ -388,9 +367,6 @@ try:
             "<HHIII", 1, 0x00FF, 0, AT_STRING_ADDRESS, len(payload)
         )
 
-    # define outside of heap to avoid overwriting in case of malloc again
-    MESSAGE_DATA_ADDR = 0x20003000
-
     # load the message structure into MESSAGE_DATA_ADDR
     mu.mem_write(MESSAGE_DATA_ADDR, message_data)
 
@@ -406,7 +382,9 @@ try:
 
     # add hooks for memory errors, basic blocks (debugging) and for svc instructions
     mu.hook_add(UC_HOOK_MEM_INVALID, hook_memory_invalid)
-    # mu.hook_add(UC_HOOK_BLOCK, hook_block)
+    mu.hook_add(
+        UC_HOOK_BLOCK, hook_block
+    )  # enabled for plot.py for emulation can be toggled off
     mu.hook_add(UC_HOOK_CODE, hook_code)
 
     # we need to set modem to 1 or else it returns 7 in AT_validate_dispatch meaning that the modem is not ready

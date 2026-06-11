@@ -1,87 +1,99 @@
-import os
 import sys
-import re
 import json
-import subprocess
+import pickle
+import pandas as pd
+from array import *
+import os
+import matplotlib
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
 
-if len(sys.argv) > 1:
-    output_dir = sys.argv[1]
-else:
-    print("No output directory provided, try again.")
-    exit(1)
+granularity = 1
 
-# collect all files from the queue
-queue_files = []
-queue_folder_name = "queue"
+json_files = sorted(
+    [
+        "coverage_results_run_1_ghidra.json",
+        "coverage_results_run_2_ghidra.json",
+        "coverage_results_run_3_ghidra.json",
+        "coverage_results_run_4_ghidra.json",
+        "coverage_results_run_5_ghidra.json",
+    ]
+)
 
-for entry in os.scandir(output_dir):
-    if not entry.is_dir():
-        continue
 
-    queue_directory = os.path.join(entry.path, queue_folder_name)
+def gen_cov_plot(df):
+    # taken from https://github.com/pr0me/safirefuzz-experiments/blob/main/04_eval_data/coverage/gen_fig3.ipynb
 
-    if not os.path.isdir(queue_directory):
-        continue
+    fig, axes = plt.subplots(1, 1, figsize=(6, 4))
 
-    for file_name in os.scandir(queue_directory):
-        if file_name.name.startswith("id:"):
-            time_field = re.search(r"time:(\d+)", file_name.name)
-
-            if not time_field:
-                continue
-
-            timestamp = int(time_field.group(1))
-            queue_files.append((timestamp, file_name.path))
-
-queue_files.sort(key=lambda item: item[0])
-
-# replay queue files in emulator.py
-cumulative_blocks = set()
-coverage_over_time = []
-
-for file_index, (stamp, fname) in enumerate(
-    queue_files
-):  # file_index only used for printing
-    output_run = subprocess.run(
-        ["python3", "emulator.py", fname], capture_output=True, text=True
-    )
-    blocks = set()  # for each file create a temporary set to store unique blocks
-    for line in output_run.stdout.split("\n"):
-        if "Basic block at" in line:
-            basic_block = re.search("0x([0-9a-fA-F]+),", line)
-            if basic_block:
-                basic_block_hex = int(basic_block.group(1), 16)
-                blocks.add(basic_block_hex)
-
-    before_update = len(cumulative_blocks)
-    new_in_this_step = blocks - cumulative_blocks
-    cumulative_blocks.update(blocks)
-
-    after_update = len(cumulative_blocks)
-    new_block_count = after_update - before_update
-
-    print(
-        f"{file_index+1}/{len(queue_files)}: time = {stamp}, new total blocks: {after_update}, found {new_block_count} new blocks."
+    sns.set_style("darkgrid")
+    g = sns.lineplot(
+        ax=axes,
+        x="Time",
+        y="Coverage",
+        data=df,
+        errorbar=("ci", 95),
+        estimator=np.median,
     )
 
-    coverage_over_time.append(
-        {
-            "file": fname,
-            "time": stamp,
-            "new total unique blocks": after_update,
-            "new blocks found": new_block_count,
-            "new blocks": [hex(b) for b in new_in_this_step],
-        }
-    )
+    g.set(xlabel="Time in Hours")
+    g.set(ylabel="Median Number of Basic Blocks")
+    g.set_xlim([-1, 25])
+    g.set_xticks([x for x in range(-1, 26) if x % 2 == 0])
+    g.grid(True)
 
-results = {
-    "total unique blocks": len(cumulative_blocks),
-    "total inputs": len(queue_files),
-    "blocks": [hex(b) for b in cumulative_blocks],
-    "coverage over time": coverage_over_time,
-}
+    plt.tight_layout()
+    plt.savefig("coverage_plot.pdf")
+    plt.savefig("coverage_plot.png")
 
-# write results to json file
-run_name = os.path.basename(output_dir.rstrip("/"))
-with open(f"coverage_results_{run_name}.json", "w") as file:
-    json.dump(results, file, indent=2)
+
+def fill_dataframe(fn):
+    with open(fn, "r") as f:
+        data = json.load(f)
+
+    cov_data = [(x, 0) for x in range(0, 86400 + granularity, granularity)]
+
+    for entry in data["coverage over time"]:
+        time_s = round_value(entry["time"] / 1000.0)
+        coverage = entry["ghidra cumulative count"]
+        cov_data.append((time_s, coverage))
+
+    df = pd.DataFrame(cov_data, columns=["Time", "Coverage"])
+    return df
+
+
+def round_value(x):
+    base = granularity
+    return base * round(x / base)
+
+
+def parse_json_file():
+    dfs = []
+
+    for fn in json_files:
+        df = fill_dataframe(fn)
+        df.sort_values(by=["Time", "Coverage"], inplace=True)
+        df.drop_duplicates(
+            subset=["Time"], inplace=True, ignore_index=True, keep="last"
+        )
+        df["Coverage"] = (
+            df["Coverage"].replace(0, np.nan).ffill().astype(int)
+        )  # convert 0 to NaN and forward fill to get the last known coverage value for each time point, then convert back to int
+        df["Time"] = df["Time"].apply(lambda x: float(x / (60 * 60)))
+
+        dfs.append(df)
+
+    dfs_con = pd.concat(dfs, ignore_index=True)
+
+    # check
+    print("Done parsing")
+    gen_cov_plot(dfs_con)
+
+
+def main():
+    parse_json_file()
+
+
+if __name__ == "__main__":
+    main()
