@@ -197,6 +197,7 @@ try:
         mu.hook_add(UC_HOOK_CODE, hook_skip, begin=addr, end=addr + 1)
 
     # functions with custom return values
+    # we use seperate hook functions instead of a single hook function to avoid the command comparison bottleneck
     mu.hook_add(UC_HOOK_CODE, hook_da004, begin=0x000DA004, end=0x000DA004 + 1)
     mu.hook_add(UC_HOOK_CODE, hook_d7f10, begin=0x000D7F10, end=0x000D7F10 + 1)
     mu.hook_add(UC_HOOK_CODE, hook_d7748, begin=0x000D7748, end=0x000D7748 + 1)

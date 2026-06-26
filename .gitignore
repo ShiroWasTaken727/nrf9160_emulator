@@ -2,10 +2,14 @@ AFLplusplus/
 input/
 output/
 all_results/
-at_strings.txt
 .gitignore
 coverage_results_output_run_*_ghidra.json
 coverage_results_output_run_*.json
 coverage_results.json
-run_plots.sh
 output_run_*/
+coverage_plot_5.pdf
+coverage_plot_5.png
+coverage_plot.pdf
+coverage_plot.png
+coverage_plot_5_baseline.pdf
+coverage_plot_baseline.pdf

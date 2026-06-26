@@ -45,13 +45,8 @@ def hook_block(uc, address, size, user_data):
 
 # hooking code for svc instructions to handle system calls
 def hook_code(uc, address, size, user_data):
-    # print(">>> Instruction at 0x%x, size = 0x%x" % (address, size))
 
     global HEAP_PTR
-
-    # TODO: remove later
-    # TEST_HEAP_OVERFLOW = 0xDA896
-    # TEST_DOUBLE_FREE = 0x13C79E
 
     sleep = 0x000D7EE6
 
@@ -338,7 +333,7 @@ try:
         file_path = sys.argv[1]
         crash_input = open(file_path, "rb").read()
 
-        at_string_bytes = crash_input[14:]
+        at_string_bytes = crash_input
         at_string = at_string_bytes + b"\x00"
 
         command_id = 1
@@ -382,13 +377,15 @@ try:
 
     # add hooks for memory errors, basic blocks (debugging) and for svc instructions
     mu.hook_add(UC_HOOK_MEM_INVALID, hook_memory_invalid)
-    mu.hook_add(
-        UC_HOOK_BLOCK, hook_block
-    )  # enabled for plot.py for emulation can be toggled off
+
+    # enabled for plot.py for emulation can be toggled off during replay
+    mu.hook_add(UC_HOOK_BLOCK, hook_block)
+
     mu.hook_add(UC_HOOK_CODE, hook_code)
 
     # we need to set modem to 1 or else it returns 7 in AT_validate_dispatch meaning that the modem is not ready
     mu.mem_write(0x0080BE07, b"\x01")
+
     # start emulation at the process_message function and end at the exit address we set in LR
     # | 1 to set thumb mode bit in the address
     mu.emu_start(process_message | 1, EXIT_ADDRESS)
